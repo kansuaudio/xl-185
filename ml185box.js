@@ -1,5 +1,5 @@
 // ml185box.js (runs in jsui: classic JavaScript only, no let/const/arrows)
-// v8ui value display for the ML-185 number boxes (Swing, Bend Range, Note and Velocity Range).
+// The drawn controls of XL-185: value boxes, dice, buttons, the fold toggle, padlocks and the Len cells.
 //
 // Draws the value like the stage tabs: Live's "Control On" orange fill, text in the normal
 // text colour over the background and in the "on" text colour (black) where the fill
@@ -12,7 +12,9 @@
 // live.text that takes the click and flashes while pressed), or len (a stage's length as 8 cells with
 // its notes drawn in: this one takes clicks and sends the new length out, tab index 0..7), or button
 // (kind lo hi size label [die]: a push button drawn like Live's own, optionally with a die before the
-// label, over a fully transparent live.text that takes the click and sends it here to flash), or fold
+// label, or with an undo, left or right icon in its place; mostly over a fully transparent live.text
+// that takes the click and sends it here to flash; Global, the two Mutates and the lanes' Random are
+// pressed by the script, the shift arrows take their own click, see press), or fold
 // (the settings-column toggle: a gear and an arrow, < while open, > while folded, lit while folded),
 // or lock (a stage's random lock: a padlock in a toggle pill, closed and lit while locked).
 
@@ -37,7 +39,7 @@ var FONT_SIZE = jsarguments.length > 4 ? Number(jsarguments[4]) : 9;
 var PLAIN = jsarguments.length > 5 && String(jsarguments[5]) === "plain";   // the number only, no bar
 // button: one control for die + label (not a die and a button doing the same thing)
 var BTN_LABEL = kind === "button" && jsarguments.length > 5 ? String(jsarguments[5]) : "";
-var BTN_ICON = kind === "button" && jsarguments.length > 6 ? String(jsarguments[6]) : "";   // "die" or "undo"
+var BTN_ICON = kind === "button" && jsarguments.length > 6 ? String(jsarguments[6]) : "";   // "die", "undo", "left" or "right"
 var BTN_DIE = BTN_ICON === "die";
 var pressed = 0;
 var pressTask = null;
@@ -54,13 +56,23 @@ var FALLBACK = {
 	live_contrast_frame: [0.5, 0.5, 0.5, 1],
 	live_control_fg: [0.85, 0.85, 0.85, 1],
 	live_control_selection: [1, 0.709804, 0.196078, 1],
-	live_control_fg_on: [0, 0, 0, 1]
+	live_control_fg_on: [0, 0, 0, 1],
+	live_control_zombie: [0.45, 0.45, 0.45, 1],
+	live_control_fg_on_zombie: [0.1, 0.1, 0.1, 1]
 };
 
 function msg_int(v) { if (kind === "button") { if (Number(v)) flash(); return; } setValue(v); }
 function enabled(v) { btnEnabled = Number(v) ? 1 : 0; mgraphics.redraw(); }
 function msg_float(v) { msg_int(v); }
 function bang() { if (kind === "button") flash(); }
+// "press": a bang out and a flash. Sent by the script for Global, the two Mutates and the lanes' Random
+// (a change of the parameter that passed its guard), and by a click on a button that has no parameter
+// under it (the shift arrows). Greyed: nothing.
+function press() {
+	if (kind !== "button" || !btnEnabled) return;
+	outlet(0, "bang");
+	flash();
+}
 
 // A click on the button: Live's pressed look (orange, dark text) for a moment.
 function flash() {
@@ -119,7 +131,21 @@ function themecolor(name, r, g, b, a) {
 	mgraphics.redraw();
 }
 
+// "dim 1": the stage lies beyond Length. The drawing takes Live's inactive ("zombie") colours, as the
+// stage's own Live controls do when they are set inactive, and the Len cells take no clicks.
+var dimmed = 0;
+var DIM = {
+	live_control_selection: "live_control_zombie",
+	live_control_fg: "live_control_fg_zombie",
+	live_control_fg_on: "live_control_fg_on_zombie"
+};
+function dim(v) {
+	dimmed = Number(v) ? 1 : 0;
+	mgraphics.redraw();
+}
+
 function color(id) {
+	if (dimmed && DIM[id]) id = DIM[id];
 	if (COLORS[id]) return COLORS[id];
 	try {
 		var c = max.getcolor(id);
@@ -239,7 +265,7 @@ function drawDie(g, x, y, sz, col) {
 	}
 }
 
-// ---- button: Live's push button look, measured in Max (2026-11-12): fill live_control_bg, 1 px
+// ---- button: Live's push button look: fill live_control_bg, 1 px
 // border live_contrast_frame, text live_control_fg; pressed: live_control_selection with
 // live_control_fg_on text. Round ends. The die and the label are centred together.
 function paintButton(g, w, h) {
@@ -254,6 +280,10 @@ function paintButton(g, w, h) {
 	g.stroke();
 	if (BTN_ICON === "undo") {                          // an undo arrow and no word
 		drawUndo(g, w / 2, h / 2, fg);
+		return;
+	}
+	if (BTN_ICON === "left" || BTN_ICON === "right") {  // a shift arrow and no word
+		drawChevron(g, w / 2, h / 2, BTN_ICON === "left" ? -1 : 1, fg);
 		return;
 	}
 	g.select_font_face(FONT);
@@ -369,6 +399,20 @@ function drawUndo(g, cx, cy, col) {
 	g.stroke();
 }
 
+// A chevron centred on (cx, cy), its tip pointing left (dir -1) or right (dir 1), drawn like the fold arrow.
+function drawChevron(g, cx, cy, dir, col) {
+	var cw = 4;
+	var ah = 3.5;
+	var tip = cx + dir * cw / 2;
+	var back = cx - dir * cw / 2;
+	g.set_source_rgba(col);
+	g.set_line_width(1.5);
+	g.move_to(back, cy - ah);
+	g.line_to(tip, cy);
+	g.line_to(back, cy + ah);
+	g.stroke();
+}
+
 function pill(g, x, y, w, h) {
 	try {
 		g.rectangle_rounded(x, y, w, h, h, h);
@@ -379,8 +423,7 @@ function pill(g, x, y, w, h) {
 
 // ---- len: the stage's length as 8 cells, its notes drawn in (tied cells) ----------------------
 // Cells inside the length are the boxes' grey, cells past it the darkest frame colour, notes the
-// text colour; a held note is one block through the whole length. (Until 2026-11-12 the two greys
-// were the other way round, so the unused part looked lighter than the length.) Click (or drag along) the cells to set the length.
+// text colour; a held note is one block through the whole length. Click (or drag along) the cells to set the length.
 
 function list() {
 	if (kind !== "len") return;
@@ -418,11 +461,11 @@ function paintLen(g, w, h) {
 	}
 }
 
-function onclick(x, y) { pickLen(x); }
+function onclick(x, y) { if (kind === "button") press(); else pickLen(x); }
 function ondrag(x, y, but) { if (but) pickLen(x); }
 
 function pickLen(x) {
-	if (kind !== "len") return;
+	if (kind !== "len" || dimmed) return;
 	var w = area()[0];
 	var k = Math.max(0, Math.min(7, Math.floor(x / w * 8)));
 	if (k + 1 === lv.len) return;

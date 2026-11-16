@@ -12,10 +12,11 @@ for x in B.values():
         g = x['text'].split()[1]
         for nm in re.findall(r'"([^"]+)"', x['text']): groups.setdefault(nm, []).append(g)
 on = {'steps': page == 0, 'note': page == 0, 'mod': page == 1, 'notmod': page != 1, 'tab:random': page == 0,
-      'tab:mod': page == 1, 'own': src != 1, 'live': src == 1, 'micro': False, 'left': not FOLD}
+      'tab:mod': page == 1, 'own': src != 1, 'live': src == 1, 'slices': src == 3, 'micro': False,
+      'left': not FOLD}
 def visible(x):
     nm = x.get('varname')
-    if nm in groups: return all(on[g] for g in groups[nm])
+    if nm in groups: return all(on.get(g, False) for g in groups[nm])
     return not x.get('hidden')
 init = {}
 for x in B.values():

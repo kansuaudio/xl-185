@@ -3,7 +3,7 @@
 //
 // Control rate only. The patch reads these tables with zl.lookup in the timing thread when a
 // stage plays a note, so nothing here sits in the timing path. Every stage control (Mode, Div,
-// Length, Probability, Slide) and Clock Timing report here; any change re-sends all tables.
+// Length, Probability, Slide, On), Clock Timing and Gate report here; any change re-sends all tables.
 
 autowatch = 0;
 inlets = 1;
@@ -24,6 +24,7 @@ var div = [1, 1, 1, 1, 1, 1, 1, 1];       // repeat every 1..4 steps (Mode II)
 var len = [1, 1, 1, 1, 1, 1, 1, 1];       // stage length in steps, 1..8
 var prob = [100, 100, 100, 100, 100, 100, 100, 100];
 var slide = [0, 0, 0, 0, 0, 0, 0, 0];
+var on = [1, 1, 1, 1, 1, 1, 1, 1];        // stage on / off (the click on the stage number)
 var clockIdx = 1;                          // 1/16
 var dirIdx = 0;      // Direction: 0 >, 1 <, 2 ><, 3 R
 var seqLen = 8;      // Length knob: stages in use (Stages mode)
@@ -38,18 +39,20 @@ var modMax = [100, 100, 100];
 var modGlide = [0, 0, 0];
 for (var li = 0; li < NL; li++) modVal.push([0, 0, 0, 0, 0, 0, 0, 0]);
 var lastStages = 0;
+var gatePct = 100;   // Gate: length of every note that does not slide, 1..100 % of its full length
 
 var self = this;
 // scripting names of the stage controls ("Stage3 Slide"), read after load by refresh()
 var NAMES = [["mode", "Mode"], ["div", "Div"], ["len", "Length"], ["prob", "Probability"],
-	["slide", "Slide"]];
+	["slide", "Slide"], ["on", "On"]];
 
 // "stage <kind> <stage 1..8> <value>". Mode, Div and Length arrive as tab indexes.
 function stage(kind, n, v) {
 	kind = String(kind);
 	if (!setStage(kind, n, v)) return;
 	tables();
-	if (kind === "mode" || kind === "div" || kind === "len") pushView(clampInt(n, 1, 8) - 1);
+	if (kind === "mode" || kind === "div" || kind === "len" || kind === "on") pushView(clampInt(n, 1, 8) - 1);
+	if (kind === "on") pushLook();
 }
 
 // The face shows each stage's Mode (a dropdown: rest, once, hold, 1/4, 1/3, 1/2, all) and its
@@ -62,11 +65,79 @@ function modeIndex(i) {
 	return 7 - div[i];          // repeats: every 4 -> 3, every 3 -> 4, every 2 -> 5, all -> 6
 }
 
+// A stage that is off shows no notes in its Len cells (mode 0 = rest); the Mode word keeps showing
+// its real Mode, so one click on the number brings back what was there.
 function pushView(i) {
 	var n = "Stage" + (i + 1);
 	var m = modeIndex(i);
 	sendTo(n + " Mode Select", ["set", m]);
-	sendTo(n + " Len View", ["list", mode[i], div[i], len[i]]);
+	sendTo(n + " Len View", ["list", on[i] ? mode[i] : 0, div[i], len[i]]);
+}
+
+// The look of a column that does not sound: a stage switched off, or one beyond Length. Both look the
+// same: no background panel, a grey number, and the whole column grey (Live's inactive look on its own
+// controls, "dim" on the drawn ones, Live's inactive text colour on the knob's value and the Mode menu,
+// which Live leaves bright on an inactive control). Inactive means no clicks: such a stage is changed by
+// hand only once it sounds again; Global, Reset, the dice, automation and Push still write it (Mutate
+// picks only stages that sound).
+// The padlock stays as it is on every stage: a stage that does not sound can still be locked, so the
+// tools leave it alone.
+// Two things differ for a stage that is only switched off: its number stays clickable (the click that
+// switches it back on) and its lane knobs on the Mod page stay live (it still sends its lane values).
+// Only changes are sent (Length can be automated).
+var TEXT_OFF = "Control Range Off (Inactive)";   // Live theme colours by their names (live_control_fg_zombie,
+var TEXT_ON = "Text / Icon";                     // live_control_fg): they follow the theme
+var lastActive = [-1, -1, -1, -1, -1, -1, -1, -1];
+var lastBeyond = [-1, -1, -1, -1, -1, -1, -1, -1];
+var lastDim = [-1, -1, -1, -1, -1, -1, -1, -1];
+function pushLook() {
+	for (var i = 0; i < 8; i++) {
+		var h = i + 1 > seqLen ? 1 : 0;
+		var a = on[i] && !h ? 1 : 0;
+		var d = h || !on[i] ? 1 : 0;
+		if (a !== lastActive[i]) {
+			sendTo("Stage" + (i + 1) + " LED", ["active", a]);
+			lastActive[i] = a;
+		}
+		if (d !== lastDim[i]) {
+			setHidden("Stage" + (i + 1) + " Panel", d);
+			dimStage(i + 1, d);
+			lastDim[i] = d;
+		}
+		if (h !== lastBeyond[i]) {
+			dimBeyond(i + 1, h);
+			lastBeyond[i] = h;
+		}
+	}
+}
+
+// the stage's own rows: its Live controls (set inactive) and its drawn parts (told to dim)
+function dimStage(n, d) {
+	var s = "Stage" + n;
+	var live = ["PitchDial" + n, "VelocityDial" + n, s + " Mode Select", s + " Probability", s + " Slide"];
+	var drawn = ["VelocityDial" + n + " Display", s + " Probability Display", s + " Len View"];
+	for (var k = 0; k < live.length; k++) sendTo(live[k], ["active", d ? 0 : 1]);
+	for (var j = 0; j < drawn.length; j++) sendTo(drawn[j], ["dim", d ? 1 : 0]);
+	sendTo("PitchDial" + n, ["textcolor", d ? TEXT_OFF : TEXT_ON]);
+	sendTo(s + " Mode Select", ["textcolor", d ? TEXT_OFF : TEXT_ON]);
+	sendTo(s + " Mode Select", ["tricolor", d ? TEXT_OFF : TEXT_ON]);
+}
+
+// only beyond Length: the stage's on / off and its lane knobs
+function dimBeyond(n, h) {
+	sendTo("Stage" + n + " On", ["active", h ? 0 : 1]);
+	for (var l = 0; l < NL; l++) {
+		var nm = "Mod " + LANES[l].toUpperCase() + " Stage" + n;
+		sendTo(nm, ["active", h ? 0 : 1]);
+		sendTo(nm, ["textcolor", h ? TEXT_OFF : TEXT_ON]);
+	}
+}
+
+function setHidden(name, h) {
+	try {
+		var o = self.patcher.getnamed(name);
+		if (o) o.hidden = h;
+	} catch (e) {}
 }
 
 function sendTo(name, args) {
@@ -84,6 +155,7 @@ function setStage(kind, n, v) {
 	case "len": len[i] = clampInt(v, 0, 7) + 1; break;
 	case "prob": prob[i] = clampInt(v, 0, 100); break;
 	case "slide": slide[i] = Number(v) ? 1 : 0; break;
+	case "on": on[i] = Number(v) ? 1 : 0; break;
 	default: return false;
 	}
 	return true;
@@ -105,6 +177,7 @@ function refresh() {
 	if ((v = readValue("Sequence Length")) !== null) seqLen = clampInt(v, 1, 8);
 	if ((v = readValue("Key In")) !== null) keyIn = clampInt(v, 0, 1);
 	if ((v = readValue("Key Mode")) !== null) keyMode = clampInt(v, 0, 1);
+	if ((v = readValue("Gate")) !== null) gatePct = clampInt(v, 1, 100);
 	for (var l = 0; l < NL; l++) {
 		var L = "Mod " + LANES[l].toUpperCase();
 		for (var st = 1; st <= 8; st++) {
@@ -118,13 +191,14 @@ function refresh() {
 	lastGate = 0;                // after load: send everything
 	tables();
 	for (var vi = 0; vi < 8; vi++) pushView(vi);
+	pushLook();
 	routing();
 	outlet(OUT_CTL, "keymode", keyMode);
 	outlet(OUT_CTL, "keyin", keyIn);
 }
 
 function direction(v) { dirIdx = clampInt(v, 0, 3); routing(); }
-function seqlen(v) { seqLen = clampInt(v, 1, 8); routing(); }
+function seqlen(v) { seqLen = clampInt(v, 1, 8); routing(); pushLook(); }
 
 // R plays whole stages, picked at random among the stages in use. Entering R, or a change of the
 // stages in use, restarts the picking.
@@ -153,7 +227,8 @@ function readValue(name) {
 }
 
 // Mod lanes (lane 0..2 = A..C). The value a stage sends is Min + value x (Max - Min), as 0..1 of
-// the mapped parameter's range (live.remote~ in normalized mode). Min above Max turns the lane over.
+// the mapped parameter's range (the patch scales it to the target's own min..max before
+// live.remote~). Min above Max turns the lane over.
 function modval(lane, n, v) {
 	var l = clampInt(lane, 0, NL - 1);
 	modVal[l][clampInt(n, 1, 8) - 1] = clampNum(v, 0, 100);
@@ -189,6 +264,12 @@ function clock(v) {
 	tables();
 }
 
+// Gate: heard from the next note, as the timing path looks the length up when a note starts
+function gate(v) {
+	gatePct = clampInt(v, 1, 100);
+	tables();
+}
+
 function loadbang() { tables(); }
 function bang() { tables(); }
 
@@ -205,13 +286,19 @@ function tables() {
 	outlet(OUT_LEN, len.slice());
 	outlet(OUT_SLIDE, slide.slice());
 	outlet(OUT_DUR, d);
-	outlet(OUT_PROB, prob.slice());
+	// a stage that is off gets probability 0: the roll (random 0..99 < probability) never passes,
+	// so neither its note nor its bend goes out; its time in the cycle stays
+	var p = [];
+	for (var k = 0; k < 8; k++) p.push(on[k] ? prob[k] : 0);
+	outlet(OUT_PROB, p);
 }
 
 // A note lasts one step (once, repeats) or the whole stage (hold), ending one tick before the next
-// step, as 1.x did at 1/16 with its gate at 100 %. A sliding note is held for its whole slot (up to
+// step. A sliding note is held for its whole slot (up to
 // the next note this stage could play) plus 3/4 of a step, so it is still sounding when the next
 // note starts, even with full swing (half a step) and the 10-tick transport poll.
+// Gate below 100 % shortens every note that does not slide: its full length times Gate, rounded, at
+// least 1 tick. A sliding note ignores Gate. At 100 % the table is exactly the one without Gate.
 function noteTicks(i) {
 	var step = STEP_TICKS[clockIdx];
 	var L = len[i];
@@ -220,7 +307,9 @@ function noteTicks(i) {
 		return slot * step + Math.round(step * 0.75);
 	}
 	var span = (mode[i] === 3 ? L : 1) * step;
-	return Math.max(1, span - 1);
+	var full = Math.max(1, span - 1);
+	if (gatePct >= 100) return full;
+	return Math.max(1, Math.round(full * gatePct / 100));
 }
 
 function clampInt(v, a, b) {

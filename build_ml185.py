@@ -1,20 +1,12 @@
-"""Build the improved ML-185 Sequencer.amxd from the original frozen device.
+"""Build "XL-185 Sequencer.amxd" from the original ML-185 device (Nico Starke, 2009).
 
 Usage: python3 -I build_ml185.py <original.amxd> <ml185scale.js> <out.amxd>
 
-Changes (see README.md next to this file):
-  1. Reload fix: after the device has loaded, every pitch/velocity/aux dial and
-     the length, direction and clock controls re-send their values, so the
-     hidden (unsaved) step grid always matches the knobs.
-  2. Random section: Random button moved here; Note Range (pitch layer, scale notes
-     only) and Velocity Range (velocity layer) low/high boxes.
-  3. Scale column: Source OFF / LIVE / OWN, Root, Scale (12-TET and microtonal),
-     Pitch Bend Range (shown only for microtonal scales); in LIVE mode a greyed
-     display pair shows the project's scale in place of Root/Scale. Notes snap at the output through lookup tables
-     built by ml185scale.js; microtonal scales add a 14-bit pitch bend.
-  4. Value boxes (Swing, Bend Range, Note/Velocity Range) drawn by a click-through jsui
-     (ml185box.js): orange fill, text black only where the fill covers it.
-  5. Info View texts for every control.
+The original frozen device is read, its patcher is edited (new controls, the note path, the mod lanes,
+the face) and the three scripts next to this file are embedded:
+  ml185scale.js   scales, random tools, Mutate, Auto, undo, Slices, page groups
+  ml185stage.js   per-stage tables, lane values, the look of stages that do not play
+  ml185box.js     the drawn controls
 """
 import copy
 import json
@@ -173,12 +165,12 @@ def live_names(js_src):
 # ---- edits -----------------------------------------------------------------
 
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-# The drawn parts (ml185box.js): jsui since 2026-11-12 (the technique MD Drum Engine and Ableton's
-# own devices run on Windows; v8ui, Max 9 only, was proven by none). Theme colours come in from a
-# live.colors object (theme_feed), as in Ableton's jsui devices.
+# The drawn parts (ml185box.js) are jsui, the technique Ableton's own devices use on both platforms.
+# Theme colours come in from a live.colors object (theme_feed), as in Ableton's jsui devices.
 DRAW_CLASS = 'jsui'
 THEME_NAMES = ['control_text_bg', 'contrast_frame', 'control_fg', 'control_selection', 'control_fg_on',
-               'control_bg', 'control_fg_zombie']      # live.colors names (no "live_" prefix) the drawings use
+               'control_bg', 'control_fg_zombie',       # live.colors names (no "live_" prefix) the drawings use
+               'control_zombie', 'control_fg_on_zombie']    # the inactive pair, for stages beyond Length
 PITCH = ['obj-1', 'obj-2', 'obj-3', 'obj-39', 'obj-55', 'obj-54', 'obj-53', 'obj-43']
 VELO = ['obj-11', 'obj-10', 'obj-9', 'obj-8', 'obj-7', 'obj-6', 'obj-5', 'obj-4']
 AUX = ['obj-19', 'obj-18', 'obj-17', 'obj-16', 'obj-15', 'obj-14', 'obj-13', 'obj-12']
@@ -246,7 +238,7 @@ def edit(doc, js_src):
     assert len(names) >= 20 and names[2] == 'Minor', names
     X, Y = 1150.0, 220.0
     add_box(P, newobj('obj-930', 'js ml185scale.js', 1, 7, [''] * 7, [X, Y + 120, 300.0, 20.0]))
-    add_line(P, 'obj-930', 6, 'obj-920', 0)     # setwidth: the settings column folds (2.0)
+    add_line(P, 'obj-930', 6, 'obj-920', 0)     # setwidth: the settings column folds
     prepends = [('obj-931', 'source', 'obj-901'), ('obj-932', 'root', 'obj-902'),
                 ('obj-933', 'scale', 'obj-903'), ('obj-934', 'bendrange', 'obj-904'),
                 ('obj-935', 'lo', 'obj-905'), ('obj-936', 'hi', 'obj-906'),
@@ -427,7 +419,7 @@ def edit(doc, js_src):
         bid = flag_ids[n]
         b = clone(rnd, bid, [UX + 760, UY + 100 + 20 * n, 92.0, 12.0], [CX, 40.0 + 14.0 * n, 92.0, 12.0],
                   varname='Random All ' + text, text=face, texton=face, mode=1, appearance=1,
-                  annotation='Tick to let Global (and Reset, Mutate) change ' + what + '.')
+                  annotation='Tick to let Global (and Mutate) change ' + what + '.')
         for k in ('bordercolor', 'focusbordercolor', 'transition'):
             b.pop(k, None)
         param(b, parameter_enum=['off', 'on'], parameter_initial=[init], parameter_initial_enable=1,
@@ -523,15 +515,26 @@ def edit(doc, js_src):
     # (a) Restart: a jump in song position (Play from the start, a loop wrap, relocating) resets
     # the tick grid, the stage-change detector, the stage counters and the swing state, so the
     # first stage enters exactly like a normal stage change. Continue-play is not a jump.
+    # A poll that comes late in Live sees the position more than 40 ticks ahead too; that used to
+    # count as a jump and restart the playing stage mid-visit. A forward gap is a jump only when it is also
+    # longer than one clock step at the current Rate (60 / 120 / 240 / 480 ticks, from ---userQuant): the
+    # grid takes its step from the song position, so after a shorter gap it lands on the right step by
+    # itself. Backward moves stay jumps. Until Rate arrives the step is 0, which leaves the plain 40-tick rule.
+    assert not any(k in boxes(T) for k in ('obj-904', 'obj-905'))
     add_box(T, newobj('obj-900', 't f f', 1, 2, ['float', 'float'], [600.0, 300.0, 40.0, 20.0]))
     add_box(T, newobj('obj-901', '- 0.', 2, 1, ['float'], [600.0, 330.0, 40.0, 20.0]))
-    add_box(T, newobj('obj-902', 'if $f1 < 0. || $f1 > 40. then bang', 1, 1, [''], [600.0, 360.0, 200.0, 20.0]))
+    add_box(T, newobj('obj-902', 'if $f1 < 0. || ($f1 > 40. && $f1 > $f2) then bang', 2, 1, [''],
+                      [600.0, 360.0, 260.0, 20.0]))
     add_box(T, newobj('obj-903', 's ---xreset', 1, 0, [], [600.0, 390.0, 75.0, 20.0]))
+    add_box(T, newobj('obj-904', 'r ---userQuant', 0, 1, [''], [800.0, 300.0, 90.0, 20.0]))   # Rate index 0..3
+    add_box(T, newobj('obj-905', 'expr 60 << $i1', 1, 1, [''], [800.0, 330.0, 90.0, 20.0]))  # one step in ticks
     add_line(T, 'obj-28', 7, 'obj-900', 0)      # raw ticks, fires before this poll's time message
     add_line(T, 'obj-900', 1, 'obj-901', 0)     # new - previous
     add_line(T, 'obj-900', 0, 'obj-901', 1)     # then keep as previous
-    add_line(T, 'obj-901', 0, 'obj-902', 0)     # polls are 10 ticks apart; > 40 or < 0 = a jump
+    add_line(T, 'obj-901', 0, 'obj-902', 0)     # polls are 10 ticks apart; < 0, or > 40 and > a step = a jump
     add_line(T, 'obj-902', 0, 'obj-903', 0)
+    add_line(T, 'obj-904', 0, 'obj-905', 0)
+    add_line(T, 'obj-905', 0, 'obj-902', 1)
     add_box(SW, newobj('obj-900', 'r ---xreset', 0, 1, [''], [400.0, 20.0, 75.0, 20.0]))
     add_box(SW, message('obj-901', 'set -1', [400.0, 50.0, 45.0, 20.0]))
     add_line(SW, 'obj-900', 0, 'obj-901', 0)
@@ -639,13 +642,14 @@ def edit(doc, js_src):
     add_line(P, 'obj-261', 3, 'obj-4206', 0)
     add_line(P, 'obj-4206', 0, 'obj-263', 0)
 
-    # 2.0 face (phase 1)
+    # the face, the note path, R direction, the mod lanes
     p1_layout(P)
     p2_engine(P)
     p3_engine(P)
     p5_engine(P)
     remove_aux_and_length_mode(P)
     fix_pass(P)
+    mappable_buttons(P)
     info_texts(P)
     theme_feed(P)
 
@@ -684,7 +688,7 @@ def strip_colors(x):
 
 
 def p1_layout(P):
-    """ML-185 2.0 face, 664 x 169: Clock column | row labels | 8 stage strips with STEPS / NOTE / MOD
+    """The face: Clock column | row labels | 8 stage strips with STEPS / NOTE / MOD
     pages | right panel that follows the page (Random / lane settings)."""
     R = boxes(P)
     DL = R['obj-296']['patcher']
@@ -746,7 +750,7 @@ def p1_layout(P):
     def drawn_button(bid, vid, label, die, rect, var, *gs):
         """One push button drawn by ml185box.js (Live's button look, optional die before the label) over the
         live.text bid made fully transparent: the live.text takes the click and sends it on, the drawing
-        flashes. Live draws nothing of ours over an opaque live.text (2026-11-12)."""
+        flashes. Live draws nothing of ours over an opaque live.text."""
         drawn_over(bid, vid, ['button', 0, 1, 9, label] + (['die'] if die else []), rect, var, *gs)
 
     def drawn_over(bid, vid, args, rect, var, *gs):
@@ -780,7 +784,7 @@ def p1_layout(P):
     # -- 1. the 24 step controls leave the DialLayer bpatcher; its logic stays and is bridged with sends
     assert all(D[i]['maxclass'] == 'live.dial' for i in PITCH + VELO + AUX)
     moved = {}
-    for did in AUX:                                 # Aux removed in 2.0: the dials go, extra2 stays 0
+    for did in AUX:                                 # Aux removed: the dials go, extra2 stays 0
         remove_box(DL, did)
     for k, did in enumerate(PITCH + VELO, 1):
         x = D[did]
@@ -931,10 +935,11 @@ def p1_layout(P):
     LX, NW, CX, CW = 6, 52, 58, 114     # names 6..58 (room for wider text on Windows), controls 58..172
     # one grid with the sequencer: top on the tab row (2), Scale on the Prob row (121),
     # Bend on the Slide row (137), Key In on the Lock row (153)
-    YL = {'Length': 2, 'Rate': 19, 'Direction': 36, 'Swing': 53, 'Transpose': 70, 'Restart': 87,
+    YL = {'Length': 2, 'Rate': 19, 'Direction': 36, 'Swing': 53, 'Transpose': 70, 'Restart': 87, 'Gate': 104,
           'Scale': 121, 'Bend': 137, 'Key In': 153}
     def name(text, var=None, *gs):
-        lab(text, [LX, YL[text], NW, 13], var, *gs, fs=9.0)
+        # Key In sits 1 px up: the switch beside it draws its text higher than the boxes of the other rows
+        lab(text, [LX, YL[text] - (1 if text == 'Key In' else 0), NW, 13], var, *gs, fs=9.0)
     def lc(bid, key, x=CX, w=CW):
         put(bid, [x, YL[key], w, 13])
         if R[bid]['maxclass'] in ('live.tab', 'live.menu', 'live.text'):
@@ -957,6 +962,26 @@ def p1_layout(P):
     boxes(P)['obj-901']['saved_attribute_attributes']['valueof']['parameter_mmax'] = 3.0
     R = boxes(P)
     name('Restart'); lc('obj-3301', 'Restart')
+    # Gate: the length of every note that does not slide, in the free row under Restart, drawn
+    # like Swing and Transpose. ml185stage.js scales its note length table; nothing in the timing path
+    # changes. Fixed ids (obj-4560 box, 4561 drawing, 4562 label), so the generated ids stay as they were.
+    gb = copy.deepcopy(numbox_t)
+    gb.update(id='obj-4560', varname='Gate', annotation='', patching_rect=[UX + 900, 1100.0, CW, 13.0])
+    gb.pop('hidden', None)
+    param(gb, parameter_initial=[100], parameter_initial_enable=1, parameter_type=1, parameter_unitstyle=5,
+          parameter_mmin=1.0, parameter_mmax=100.0, parameter_steps=0, parameter_longname='Gate',
+          parameter_shortname='Gate', parameter_invisible=0)
+    add_box(P, gb)
+    gl = clone(label_t, 'obj-4562', [UX, 1100.0, NW, 16.0], None, text='Gate', ignoreclick=1, fontsize=9.0,
+               varname='lbl Gate')
+    gl.pop('frgb', None)
+    gl.pop('textcolor', None)
+    add_box(P, gl)
+    put('obj-4562', [LX, YL['Gate'], NW, 13])
+    R = boxes(P)
+    lc('obj-4560', 'Gate')
+    vg = overlay('obj-4560', 'ipct', 1, 100, 'Gate Display', vid='obj-4561', plain=True); put(vg, [CX, YL['Gate'], CW, 13])
+    R = boxes(P)
     # Scale row: Source, Root, Scale (the LIVE display pair takes the Root and Scale cells)
     name('Scale')
     # Root, then one menu Off / Live / own scales (Source merged in, so the scale
@@ -1016,9 +1041,10 @@ def p1_layout(P):
         put(d, rect)
         if gs:
             grp(var, *gs)
-    lab('Pitch', [GX, 46, 28, 12], 'lbl Pitch', 'notmod', fs=9.0); grp('Random Pitch Row', 'notmod')
+    # Pitch and Vel sit 2 px above their dice's boxes, like the lane letters: Live draws label text low
+    lab('Pitch', [GX, 44, 28, 12], 'lbl Pitch', 'notmod', fs=9.0); grp('Random Pitch Row', 'notmod')
     dice('obj-2120', [208, 46, 13, 13], 'Random Pitch Row Dice', 'notmod')
-    lab('Vel', [GX, 74, 27, 12], 'lbl Vel', 'notmod', fs=9.0); grp('Random Velocity Row', 'notmod')
+    lab('Vel', [GX, 72, 27, 12], 'lbl Vel', 'notmod', fs=9.0); grp('Random Velocity Row', 'notmod')
     dice('obj-2121', [208, 74, 13, 13], 'Random Velocity Row Dice', 'notmod')
     # rows (the Lock row): Vel 74, Mode 90, Len 106, Prob 121, Slide 137, Lock 153
     for text, y, g in (('Mode', 90, 'steps'), ('Len', 105, 'steps'), ('Prob', 121, 'note'), ('Slide', 137, 'note'),
@@ -1027,7 +1053,9 @@ def p1_layout(P):
     lane_ids = p5_controls(P, numbox_t, button_t, R['obj-157'], boxes(P)[moved[PITCH[0]]])
     for l, letter in enumerate(LANES):             # Mod rows: knobs y 31 + 45 * l, 40 high; letter and die
         y = 31 + 45 * l
-        lab(letter, [GX, y + 15, 20, 12], 'lbl Lane ' + letter, 'mod', fs=9.0)
+        # the letter's box sits 2 px above the die's: Live draws the text low in a label, and the letter
+        # then stands on the die's centre line
+        lab(letter, [GX, y + 13, 20, 12], 'lbl Lane ' + letter, 'mod', fs=9.0)
         long = 'Random Lane %s' % letter
         b = clone(button_t, 'obj-%d' % (4390 + l), [UX + 900, 300.0 + 60 * l, 11.0, 11.0], None, varname=long,
                   annotation='Randomizes the 8 knobs of lane %s (0-100 %%).' % letter)
@@ -1049,17 +1077,56 @@ def p1_layout(P):
         grp(long, 'mod')
         dice(b['id'], [208, y + 15, 13, 13], long + ' Dice', 'mod')
 
+    # Shift: drawn arrow buttons that take their own click (no parameter, no live.text under
+    # them); the bang goes to a message for ml185scale.js. Sequencer page: < and > on the tab line over stages
+    # 7 and 8, rotating every stage row. Mod page: < and > under each lane's letter and die, rotating that
+    # lane's knobs. Ids obj-4800..4807 (drawings), obj-4810..4817 (messages).
+    def arrow(k, msg, icon, rect, var, *gs):
+        vid, mid = 'obj-%d' % (4800 + k), 'obj-%d' % (4810 + k)
+        add_box(P, {'maxclass': DRAW_CLASS, 'id': vid, 'varname': var, 'filename': 'ml185box.js',
+                    'jsarguments': ['button', 0, 1, 9, '', icon], 'numinlets': 1, 'numoutlets': 1, 'outlettype': [''],
+                    'parameter_enable': 0, 'border': 0, 'ignoreclick': 0,
+                    'patching_rect': [UX + 1200, 1300.0 + 30 * k, rect[2], rect[3]],
+                    'presentation': 1, 'presentation_rect': list(rect), 'annotation': ''})
+        add_box(P, message(mid, msg, [UX + 1260, 1300.0 + 30 * k, 90.0, 20.0]))
+        add_line(P, vid, 0, mid, 0)
+        add_line(P, mid, 0, 'obj-930', 0)
+        put(vid, rect)
+        grp(var, *gs)
+    arrow(0, 'shift -1', 'left', [SX + 52 * 6 + 3, 2, 43, 13], 'Shift Left Button', 'steps')
+    arrow(1, 'shift 1', 'right', [SX + 52 * 7 + 3, 2, 43, 13], 'Shift Right Button', 'steps')
+    for l, letter in enumerate(LANES):
+        y = 31 + 45 * l
+        arrow(2 + 2 * l, 'laneshift %d -1' % l, 'left', [GX, y + 30, 20, 13], 'Lane %s Shift Left Button' % letter, 'mod')
+        arrow(3 + 2 * l, 'laneshift %d 1' % l, 'right', [GX + 22, y + 30, 20, 13], 'Lane %s Shift Right Button' % letter, 'mod')
+
     note_ids = p2_controls(P, numbox_t, R['obj-157'])
     mode_sel, len_view = p6_controls(P, R['obj-902'], stage_len)
     vel_ids = [moved[d] for d in VELO]
     for i in range(8):
         x0 = SX + 52 * i
-        pnl = clone(panel_t, nid(), [UX, 500.0 + 20 * i, 49.0, 151.0], None, background=1, ignoreclick=1)
+        # the column's panel is named so ml185stage.js can hide it for a stage that does not play
+        pnl = clone(panel_t, nid(), [UX, 500.0 + 20 * i, 49.0, 151.0], None, background=1, ignoreclick=1,
+                    varname='Stage%d Panel' % (i + 1))
         add_box(P, pnl); put(pnl['id'], [x0, 16, 49, 151])
         led = R[leds[i]]
         strip_colors(led)
         led.update(text=str(i + 1), texton=str(i + 1), ignoreclick=1, fontsize=9.0)
         put(leds[i], [x0 + 3, 18, 43, 11])
+        # On: a stored, automatable toggle over the stage number, fully transparent so the number
+        # shows through; ml185stage.js draws the number inactive while the stage is off. Both pages, so
+        # no page group. Ids obj-4541..4548.
+        sw = clone(R['obj-157'], 'obj-%d' % (4541 + i), [3400.0, 1100.0 + 20 * i, 43.0, 11.0], None,
+                   varname='Stage%d On' % (i + 1), annotation='', text='', texton='')
+        param(sw, parameter_enum=['off', 'on'], parameter_initial=[1], parameter_initial_enable=1,
+              parameter_longname='Stage%d On' % (i + 1), parameter_shortname='St%d On' % (i + 1),
+              parameter_mmin=0.0, parameter_mmax=1.0, parameter_invisible=0)
+        for attr in ('bgcolor', 'activebgcolor', 'bgoncolor', 'activebgoncolor', 'bordercolor', 'focusbordercolor',
+                     'textcolor', 'activetextcolor', 'textoncolor', 'activetextoncolor', 'textoffcolor'):
+            sw[attr] = [0.0, 0.0, 0.0, 0.0]
+            sw.setdefault('saved_attribute_attributes', {})[attr] = {'expression': ''}
+        add_box(P, sw)
+        put(sw['id'], [x0 + 3, 18, 43, 11])
         put(moved[PITCH[i]], [x0, 31, 49, 40]); grp('PitchDial%d' % (i + 1), 'notmod')
         put(vel_ids[i], [x0 + 3, 74, 43, 13]); grp('VelocityDial%d' % (i + 1), 'notmod')
         vv = overlay(vel_ids[i], 'int', 0, 127, 'VelocityDial%d Display' % (i + 1), refresh=False)
@@ -1090,7 +1157,7 @@ def p1_layout(P):
     sep2 = clone(line_t, nid(), [UX, 420.0, 5.0, 155.0], None); add_box(P, sep2); put(sep2['id'], [639, 4, 5, 161])
 
     # Right panel (x 646, w 134), switched by the Sequencer / Mod tabs: Random beside the stages;
-    # beside each lane's knob row its Map (x unmaps), then Min, Max and Smooth
+    # beside each lane's knob row its Map (X unmaps), then Min, Max and Smooth
     PX, PW = 646, 134
     # rows on the sequencer's lines: Global / Reset on the tab row, ticks in the pitch row, the range
     # boxes on the Mode and Prob rows, Mutate | Auto | 4 8 16 on the bottom (Lock) row; columns 646..710 and
@@ -1101,13 +1168,12 @@ def p1_layout(P):
     put('obj-980', [PX, 2, C2 - 2 - PX, 13]); grp('Random All', 'tab:random')
     R['obj-980'].update(fontsize=9.0,
                         annotation='Global: randomizes the parts ticked below for all 8 stages (pitch from Note '
-                                   'range and the scale, velocity from Velocity range). Reset puts the same '
-                                   'ticked parts back to their defaults.')
+                                   'range and the scale, velocity from Velocity range). Reset puts every '
+                                   'stage row back to its defaults.')
     rs = clone(R['obj-980'], 'obj-4430', [UX + 900, 600.0, 53.0, 16.0], None, varname='Reset Ticked',
                text='Reset', texton='Reset', fontsize=9.0,
-               annotation='Reset: the parts ticked below go back to their defaults for all 8 stages (pitch '
-                          '0 st, velocity 120, Mode once, Div 1, Len 1, Seq Length 8, Prob 100 %, Slide off). '
-                          'Parts not ticked stay.')
+               annotation='Reset: every unlocked stage goes back to its defaults (pitch 0 st, velocity 120, '
+                          'Mode once, Len 1, Prob 100 %, Slide off, stage on), whatever is ticked.')
     param(rs, parameter_longname='Reset Ticked', parameter_shortname='Reset')
     add_box(P, rs)
     add_box(P, newobj('obj-4431', 'route bang', 2, 2, ['', ''], [UX + 960, 600.0, 60.0, 20.0]))
@@ -1155,6 +1221,10 @@ def p1_layout(P):
     for ids, g in ((('obj-3401', 'obj-3402', 'obj-3407'), 'tab:random'), (('obj-4700', 'obj-4704', 'obj-4706'), 'tab:mod')):
         for bid, x, w in zip(ids, (PX, PX + 48, PX + 80), (46, 30, PW - 80)):
             put(bid, [x, 153, w, 13]); grp(R[bid]['varname'], g)
+    # Mutate is drawn like Global: since it is mappable it is a toggle underneath (mappable_buttons),
+    # and Live's own toggle would stay lit after every second press. Ids obj-4488, obj-4489.
+    drawn_button('obj-3401', 'obj-4488', 'Mutate', False, [PX, 153, 46, 13], 'Mutate Button', 'tab:random')
+    drawn_button('obj-4700', 'obj-4489', 'Mutate', False, [PX, 153, 46, 13], 'Lane Mutate Button', 'tab:mod')
     # "Bars" over 4 / 8 / 16, like the range labels 13 px above their boxes; the Mod page
     # has lane C's boxes on that line, so only the Sequencer page has it
     hb = lab('Bars', [PX + 80, 140, PW - 80, 12], 'lbl Mutate Bars', 'tab:random', fs=9.0)
@@ -1171,7 +1241,8 @@ def p1_layout(P):
             ('obj-4463', 'Random Lanes', 'Rnd Lanes', 'Random', 'obj-4469', [PX, 2, C2 - 2 - PX, 13],
              'Random: sets the knobs of all three lanes to random values. Min, Max, Smooth and the mappings stay.'),
             ('obj-4466', 'Reset Lanes', 'Rst Lanes', 'Reset', 'obj-4470', [C2 + 34, 2, PX + PW - C2 - 34, 13],
-             'Reset: sets the knobs of all three lanes to 0 %. Min, Max, Smooth and the mappings stay.'))):
+             'Reset: the Mod page back to its defaults (knobs 0 %, Min 0 %, Max 100 %, Smooth 0 ms). The '
+             'mappings stay.'))):
         b = clone(R['obj-980'] if text else button_t, bid, [UX + 900, 760.0 + 30 * k, 13.0, 13.0], None,
                   varname=long, text=text, texton=text, fontsize=9.0, annotation=info)
         param(b, parameter_enum=['val1', 'val2'], parameter_longname=long, parameter_shortname=short,
@@ -1195,8 +1266,10 @@ def p1_layout(P):
         boxes(P)[hb]['textjustification'] = 1
     for l, letter in enumerate(LANES):
         y = 31 + 45 * l                         # Map 13 + 2 + boxes 13 from the top of the knob row, so the
-        put(lane_ids['map'][l], [PX, y, PW - 15, 13]); grp('Mod %s Map' % letter, 'tab:mod')   # Mutate row fits
-        put(lane_ids['unmap'][l], [PX + PW - 13, y, 13, 13]); grp('Mod %s Unmap' % letter, 'tab:mod')
+        # Map over the Min and Max columns, its x at the left edge of the Smooth column: one grid with the
+        # boxes below
+        put(lane_ids['map'][l], [PX, y, 82, 13]); grp('Mod %s Map' % letter, 'tab:mod')   # Mutate row fits
+        put(lane_ids['unmap'][l], [PX + 84, y, 13, 13]); grp('Mod %s Unmap' % letter, 'tab:mod')
         for k, (part, x, w, kind, hi) in enumerate((('Min', PX, 40, 'ipct', 100), ('Max', PX + 42, 40, 'ipct', 100),
                                                      ('Smooth', PX + 84, 50, 'ms', 2000))):
             bid = lane_ids[part.lower()][l]
@@ -1205,7 +1278,7 @@ def p1_layout(P):
             vo = overlay(bid, kind, 0, hi, var + ' Display', vid='obj-%d' % (3741 + 3 * l + k), plain=True)
             put(vo, [x, y + 15, w, 13]); grp(var + ' Display', 'tab:mod')
 
-    # Reused 1.x labels get scripting names for their tab
+    # Reused labels get scripting names for their tab
     R = boxes(P)
     for bid, var in (('obj-915', 'lbl Note Range'), ('obj-926', 'lbl Velocity Range')):
         R[bid]['varname'] = var
@@ -1271,7 +1344,7 @@ NOTE_TEXT = {
 
 def p2_controls(P, numbox_t, toggle_t):
     """Stage1-8 Probability (drawn number boxes) and Slide (toggle). Ids obj-3001..3024, three per stage:
-    Probability, a free slot (Gate until 2026-11-12, removed), Slide. Returns
+    Probability, a free slot (once Gate, removed), Slide. Returns
     {kind: [8 ids]}; placed by p1_layout."""
     ids = {'Probability': [], 'Slide': []}
     k = 3000
@@ -1307,19 +1380,20 @@ STAGE_LEN = ['obj-35', 'obj-32', 'obj-11', 'obj-38', 'obj-46', 'obj-49', 'obj-52
 
 
 def p2_engine(P):
-    """Phase 2 note path, all Max objects in the timing thread; ml185stage.js only
+    """The note path, all Max objects in the timing thread; ml185stage.js only
     builds the tables. Ids obj-3101..3199 (decisions, tables) and obj-3201..3240 (note output).
 
     Decisions: when the step grid plays a stage, before the note goes out, look up the stage's note
     length, slide flag and probability and roll it. A failed roll (or velocity 0) closes the gate in
-    front of the scale snap, so neither the bend nor the note goes out.
+    front of the scale snap, so neither the bend nor the note goes out. A stage switched off
+    (StageN On) has probability 0 in the table. The script taps include the On toggles (prepend stage on N).
 
     Note output: a one-note handler replaces makenote (whose repeat mode cannot change while notes
     sound: setting it flushes them). It remembers the sounding note H, whether H was a sliding note,
     and one re-armable timer (the note length). For each new note p:
       no note sounding       -> note-on p
       H sounding, p != H     -> note-on p, note-off H 30 ms later (legato: a mono synth glides)
-      H sounding, p == H     -> note-off H, then note-on p  (re-attack, as makenote did in 1.x)
+      H sounding, p == H     -> note-off H, then note-on p  (re-attack)
       ... unless H was a sliding note and p == H -> tie: no new attack, H keeps sounding
     then H = p and the timer restarts with p's length; when it runs out, H ends. Stop / device off end H.
     """
@@ -1345,6 +1419,8 @@ def p2_engine(P):
     o('obj-3110', 'zl.lookup', 2, 2, ['', ''], 60, 180)              # probability
     o('obj-3111', 't b i', 1, 2, ['bang', 'int'], 60, 210, 40.0)
     o('obj-3112', 'random 100', 2, 1, ['int'], 40, 240, 70.0)
+    # random 100 gives 0..99 and the note passes when it is below the probability: 0 % never passes
+    # (a stage switched off is sent 0), 100 % always does
     o('obj-3113', '<', 2, 1, ['int'], 60, 270, 30.0)
     o('obj-3114', 'gate 1 1', 2, 1, [''], 300, 330)                  # this note on / off
     o('obj-3115', '> 0', 2, 1, ['int'], 160, 120, 30.0)             # velocity 0 = no note
@@ -1379,7 +1455,7 @@ def p2_engine(P):
     # note output: makenote obj-88 is bypassed (kept, unused)
     remove_line(P, 'obj-942', 0, 'obj-88', 0)
     remove_line(P, 'obj-82', 0, 'obj-88', 1)
-    remove_line(P, 'obj-280', 0, 'obj-88', 2)          # 1.x length (extra1 x 8 - 1 ticks) retired
+    remove_line(P, 'obj-280', 0, 'obj-88', 2)          # the old length (extra1 x 8 - 1 ticks) retired
     o('obj-3201', 't i i i', 1, 3, ['int', 'int', 'int'], 400, 400)  # new pitch p
     o('obj-3202', 'i', 2, 1, ['int'], 520, 430, 30.0)               # p, for the note-on
     o('obj-3203', 'expr ($i2 >= 0) * (1 + ($i1 == $i2) * (1 + $i3))', 3, 1, [''], 400, 460, 260.0)
@@ -1440,7 +1516,7 @@ def p2_engine(P):
         add_line(P, a_, ao, b_, bi)
     # H starts at -1 in the expression too
     m('obj-3219', '-1', 760, 400, 30.0)
-    # tables before the script has run: 1.x behaviour
+    # tables before the script has run: the old behaviour
     o('obj-3121', 'loadbang', 1, 1, ['bang'], 300, 0)
     o('obj-3122', 't b b b b', 1, 4, ['bang', 'bang', 'bang', 'bang'], 300, 30)
     for bid, text, dst, dx in (('obj-3123', ' '.join(['100'] * 8), 'obj-3110', 300),
@@ -1471,10 +1547,11 @@ def p2_engine(P):
         tap(STAGE_MODE[n - 1], 'prepend stage mode %d' % n)
         tap(STAGE_DIV[n - 1], 'prepend stage div %d' % n)
         tap(STAGE_LEN[n - 1], 'prepend stage len %d' % n)
-        for kind, word in (('Probability', 'prob'), ('Slide', 'slide')):
+        for kind, word in (('Probability', 'prob'), ('Slide', 'slide'), ('On', 'on')):
             src = next(b['box']['id'] for b in P['boxes'] if b['box'].get('varname') == 'Stage%d %s' % (n, kind))
             tap(src, 'prepend stage %s %d' % (word, n))
     tap('obj-267', 'prepend clock')
+    tap('obj-4560', 'prepend gate')                   # Gate: scales the note length table
     assert k < 3199
     add_box(P, message('obj-3199', 'refresh', [X + 300, Y + 100, 50.0, 20.0]))
     add_line(P, 'obj-922', 2, 'obj-3199', 0)          # after load, with the stage tabs
@@ -1482,7 +1559,7 @@ def p2_engine(P):
 
 
 def p3_controls(P, tab_t, toggle_t):
-    """Phase 3 parameters: Restart (Clock column), Key In and Key Mode (Scale tab). Ids obj-3301..3303."""
+    """Restart (Clock column), Key In and Key Mode (Scale tab). Ids obj-3301..3303."""
     b = clone(tab_t, 'obj-3301', [2400.0, 700.0, 78.0, 13.0], None, varname='Restart',
               annotation='Jumps back to stage 1 at the start of every 1st, 2nd, 4th or 8th bar (counted from bar 1 '
                          'of the song): the same clean restart as pressing Play (with Direction R: a new random '
@@ -1512,7 +1589,7 @@ def p3_controls(P, tab_t, toggle_t):
 
 
 def p3_engine(P):
-    """Phase 3 (R fix), Max objects in the timing thread. Ids obj-3310..3399 in the root,
+    """R direction, Max objects in the timing thread. Ids obj-3310..3399 in the root,
     obj-910..921 inside p Transportation.
 
     Restart: the step grid takes its step from the song position it is sent (a reset only makes it
@@ -1622,7 +1699,7 @@ def p3_engine(P):
     k = 3340
     for src, word in (('obj-73', 'direction'), ('obj-157', None), ('obj-72', 'seqlen')):
         k += 1
-        if word is None:                            # Length Mode (Stages / Fixed) left in 2.0: id kept free
+        if word is None:                            # Length Mode (Stages / Fixed) removed: id kept free
             continue
         o(P, 'obj-%d' % k, 'prepend ' + word, 1, 1, [''], 600, 30 * (k - 3340), 110.0)
         ln(P, (src, 0, 'obj-%d' % k, 0), ('obj-%d' % k, 0, 'obj-3101', 0))
@@ -1787,7 +1864,7 @@ MAP_COLORS = {'activebgcolor': 'live_lcd_bg', 'activebgoncolor': 'live_lcd_bg', 
 
 
 def p5_controls(P, numbox_t, button_t, toggle_t, dial_t):
-    """Phase 5 parameters: Mod A-C Stage1-8 (Mod page), Mod A-C Min / Max / Smooth and the
+    """Mod lane parameters: Mod A-C Stage1-8 (Mod page), Mod A-C Min / Max / Smooth and the
     Map / unmap buttons (right panel on the Mod page). Ids obj-3501..3524 lane values, 3541.. Map,
     3545.. unmap, 3551.. Min, 3555.. Max, 3559.. Smooth. Returns the ids by part."""
     ids = {'stage': [[], [], []], 'map': [], 'unmap': [], 'min': [], 'max': [], 'smooth': []}
@@ -1818,14 +1895,14 @@ def p5_controls(P, numbox_t, button_t, toggle_t, dial_t):
                   fontsize=9.0,
                   annotation='Click, then click any parameter in Live to map lane %s to it (Map blinks while it '
                              'waits; click again to cancel). The lane\'s knob row then moves that parameter each '
-                             'time a stage starts. Shows the mapped parameter\'s name; x unmaps. The mapping is '
+                             'time a stage starts. Shows the mapped parameter\'s name; X unmaps. The mapping is '
                              'saved with the set. A parameter that is already remote-controlled (by another lane or '
                              'device) is refused and the button shows Map again.' % letter)
         m['saved_attribute_attributes'] = {k: {'expression': 'themecolor.' + v} for k, v in MAP_COLORS.items()}
         add_box(P, m)
         ids['map'].append(m['id'])
         u = clone(toggle_t, 'obj-%d' % (3545 + l), [2810.0, 900.0 + 30 * l, 15.0, 15.0], None,
-                  varname='Mod %s Unmap' % letter, text='x', texton='x', parameter_enable=0, appearance=2,
+                  varname='Mod %s Unmap' % letter, text='X', texton='X', parameter_enable=0, appearance=2,
                   fontsize=9.0, annotation='Removes lane %s\'s mapping: the parameter is free again.' % letter)
         u['saved_attribute_attributes'] = {k: {'expression': 'themecolor.' + v} for k, v in MAP_COLORS.items()}
         add_box(P, u)
@@ -1844,14 +1921,19 @@ def p5_controls(P, numbox_t, button_t, toggle_t, dial_t):
 
 
 def p5_engine(P):
-    """Phase 5: the mod lanes. When a stage starts (the stage-change detector's
+    """The mod lanes. When a stage starts (the stage-change detector's
     ---chtrig, also on R picks and restarts), each lane looks up the stage's value (0..1, Min / Max
-    already applied by ml185stage.js) and sends it with the lane's Smooth time to live.remote~ in
-    normalized mode: no undo entries, no automation written. live.map (strict: not this device) picks
-    the target; both keep it with the set (persistent mapping). After load the button shows the
-    target's name again. A target live.remote~ refuses (already remote-controlled, "mapping 0") is
-    unmapped, so the button never shows a lane that does nothing.
-    Ids obj-3570..3699, 3800..3829, 4300..4383 (Map look)."""
+    already applied by ml185stage.js), scales it to the target's own range (min + x * (max - min), an
+    expr in the timing thread) and sends it with the lane's Smooth time to live.remote~: no undo
+    entries, no automation written. live.map (strict: not this device) picks the target; both keep it
+    with the set (persistent mapping). After load the button shows the target's name again. A target
+    live.remote~ refuses (already remote-controlled, "mapping 0") is unmapped, so the button never
+    shows a lane that does nothing.
+    Range (no @normalized, which needs Max 8.6): whenever a target id arrives (Map, or getid after
+    load) a gate in front of the pack closes; for an id other than 0 a second live.object is given it
+    and asked "get min", then "get max"; the max reply opens the gate. So nothing is sent before the
+    target's range is known.
+    Ids obj-3570..3699 (scaling: 3660 + 12 * lane + 0..11), 3800..3829, 4300..4383 (Map look)."""
     R = boxes(P)
     assert R['obj-151']['text'] == 's ---chtrig'
     X, Y = 4200.0, 600.0
@@ -1879,7 +1961,7 @@ def p5_engine(P):
         zl, pk, lr = 'obj-%d' % (3574 + l), 'obj-%d' % (3578 + l), 'obj-%d' % (3582 + l)
         o(zl, 'zl.lookup', 2, 2, ['', ''], dx, 130)
         o(pk, 'pack 0. 0.', 2, 1, [''], dx, 160)
-        o(lr, 'live.remote~ @normalized 1', 2, 1, [''], dx, 190, 150.0, **copy.deepcopy(persist))
+        o(lr, 'live.remote~', 2, 1, [''], dx, 190, 150.0, **copy.deepcopy(persist))
         lm = 'obj-%d' % (3587 + l)
         o(lm, 'live.map @strict 1', 1, 5, ['', '', '', 'int', ''], dx, 250, 90.0, **copy.deepcopy(persist))
         b = 3600 + 20 * l                      # per lane 3600..3619, 3620..3639, ...
@@ -1895,7 +1977,7 @@ def p5_engine(P):
         o(sn, 'route <none>', 2, 2, ['', ''], dx, 310, 80.0)
         o(ts, 'tosymbol', 1, 1, [''], dx, 340)
         sp6, pt6, nm = ('obj-%d' % (3800 + 10 * l + k) for k in range(6, 9))
-        o(sp6, 'sprintf symout %.20s', 1, 1, [''], dx + 130, 370, 110.0)
+        o(sp6, 'sprintf symout %.14s', 1, 1, [''], dx + 130, 370, 110.0)     # what fits the 82 px button
         o(pt6, 'prepend text', 1, 1, [''], dx + 130, 400, 80.0)
         m(nm, 'text Map', dx + 180, 340, 60.0)
         gi, ri, sz, ti, pi = ('obj-%d' % (b + k) for k in range(11, 16))
@@ -1915,8 +1997,28 @@ def p5_engine(P):
         m(gn, 'get name', dx, 560, 55.0)
         o(lo, 'live.object', 2, 1, [''], dx, 590, 70.0)
         o(rn, 'route name', 2, 2, ['', ''], dx, 620, 70.0)
+        # the target's range: lane value 0..1 -> expr -> gate (open once max is known) -> pack
+        (ex, gt, tz, nz0, tq, pq, gmin, gmax, lmm, rmm, tbf, op) = ('obj-%d' % (3660 + 12 * l + k) for k in range(12))
+        o(ex, 'expr $f1 * ($f3 - $f2) + $f2', 3, 1, [''], dx + 70, 130, 150.0)
+        o(gt, 'gate 1', 2, 1, [''], dx + 70, 160, 40.0)          # closed until max arrives
+        o(tz, 't i 0', 1, 2, ['int', 'int'], dx + 240, 470, 40.0)   # a target id: close first
+        o(nz0, 'sel 0', 2, 2, ['bang', ''], dx + 240, 500, 40.0)   # id 0 (unmapped): ask nothing
+        o(tq, 't b b i', 1, 3, ['bang', 'bang', 'int'], dx + 240, 530, 50.0)
+        o(pq, 'prepend id', 1, 1, [''], dx + 300, 560, 70.0)
+        m(gmin, 'get min', dx + 240, 560, 50.0)
+        m(gmax, 'get max', dx + 240, 590, 50.0)
+        o(lmm, 'live.object', 2, 1, [''], dx + 240, 620, 70.0)
+        o(rmm, 'route min max', 3, 3, ['', '', ''], dx + 240, 650, 90.0)
+        o(tbf, 't b f', 1, 2, ['bang', 'float'], dx + 280, 680, 40.0)
+        m(op, '1', dx + 240, 710, 30.0)
+        ln((zl, 0, ex, 0), (ex, 0, gt, 1), (gt, 0, pk, 0),
+           (tr, 0, tz, 0), (ti, 1, tz, 0),                          # the id: from Map, and after load
+           (tz, 1, gt, 0), (tz, 0, nz0, 0), (nz0, 1, tq, 0),
+           (tq, 2, pq, 0), (pq, 0, lmm, 1), (tq, 1, gmin, 0), (tq, 0, gmax, 0),   # id, then min, then max
+           (gmin, 0, lmm, 0), (gmax, 0, lmm, 0), (lmm, 0, rmm, 0),
+           (rmm, 0, ex, 1), (rmm, 1, tbf, 0), (tbf, 1, ex, 2), (tbf, 0, op, 0), (op, 0, gt, 0))
         btn, unb = 'obj-%d' % (3541 + l), 'obj-%d' % (3545 + l)
-        ln((zl, 0, pk, 0), (pk, 0, lr, 0),
+        ln((pk, 0, lr, 0),
            ('obj-3573', n_l - 1 - l, zl, 0),
            ('obj-3586', l, zl, 1), ('obj-3586', n_l + l, pk, 1),
            (btn, 0, mp, 0), (mp, 0, lm, 0),                       # Map button -> mapping 1/0
@@ -1970,13 +2072,18 @@ def p5_engine(P):
         o(fs, 'sel 0 1', 1, 3, ['bang', 'bang', ''], dx, 1050, 50.0)
         m(uc, 'lcdcolor "LCD Text / Icon", lcdbgcolor "LCD Background"', dx, 1080, 150.0)
         m(mc, 'lcdbgcolor "LCD Text / Icon", lcdcolor "LCD Background"', dx, 1110, 150.0)
+        # The blink's colour passes a gate that is open only while the button waits. qmetro works through the
+        # queue, so one more tick can arrive after the mapping has ended and the final look is set; without
+        # the gate that tick painted the text in the fill's colour: a mapped button, solid orange, no name.
+        bg = 'obj-%d' % (4300 + 25 * l + 21)
+        o(bg, 'gate 1', 2, 1, [''], dx + 140, 960, 45.0)
+        ln((st1, 0, bg, 0), (st0, 1, bg, 0), (lc, 0, bg, 1), (bg, 0, btn, 0))
         ln((btn, 0, bs, 0), (lm, 3, bs, 0),                                # mapping starts / stops
            (bs, 0, st1, 0), (st1, 1, bgn, 0), (bgn, 0, btn, 0), (st1, 0, qm, 0),
            (bs, 1, st0, 0), (st0, 1, qm, 0), (st0, 0, mf, 0),
            (qm, 0, tg, 0), (tg, 0, tbi, 0), (tbi, 1, asl, 0), (asl, 0, a1, 0), (asl, 1, a5, 0),
            (a1, 0, ps, 0), (a5, 0, ps, 0), (ps, 0, ap, 0),
            (tbi, 0, zr, 0), ('obj-4383', 0, zr, 1), (zr, 0, zs, 0), (zs, 0, ap, 0), (ap, 0, lc, 0),
-           (lc, 0, btn, 0),
            (sn, 0, m0, 0), (ts, 0, m1, 0), (m0, 0, mf, 0), (m1, 0, mf, 0),   # mapped or not: its look
            (mf, 0, fs, 0), (fs, 0, uc, 0), (fs, 1, mc, 0), (uc, 0, btn, 0), (mc, 0, btn, 0))
     # every lane control reports to the stage script (it also reads them all after load)
@@ -2002,7 +2109,9 @@ def p5_engine(P):
 INFO = [
     (r'Settings Fold', 'Folds the settings column away, so the device takes less room in the chain. Click again to '
      'open it. The settings keep working while they are folded.'),
-    (r'Sequence Length', 'How many stages play, 1 to 8, counting from stage 1. Later stages are skipped.'),
+    (r'Sequence Length', 'How many stages play, 1 to 8, counting from stage 1. Later stages are skipped: their '
+     'columns lose the background and turn grey, and they cannot be changed by hand until Length reaches them. '
+     'Global, Reset and the dice still change them; lock a stage to keep it.'),
     (r'Clock Timing', 'One clock step: a 1/32, 1/16, 1/8 or 1/4 note. Each stage lasts its Len in these steps. '
      '1/4 always plays straight.'),
     (r'Direction', 'Order of the stages: > forward, < backward, >< back and forth, R a random stage each time '
@@ -2011,6 +2120,19 @@ INFO = [
      'shuffle); a triplet shuffle is about 67 %.'),
     (r'Coarse Tune', 'Moves the whole sequence up or down, -24 to +24 semitones. With a scale on, the notes still '
      'snap to it. Key In adds on top.'),
+    (r'Gate', 'Length of every note that does not slide, 1 to 100 % of its full length (one step, or the whole '
+     'stage for hold). Lower values play shorter notes. Stages with Slide on keep their full length. 100 % plays '
+     'the notes at their full length. A change is heard from the next note.'),
+    (r'Shift Left', 'Moves the pattern one stage to the left inside Length: pitch, velocity, Mode, Len, Prob, Slide, '
+     'on / off and the padlock move together, and stage 1 wraps around to the last stage in use. Stages beyond '
+     'Length and the lane knobs stay. The undo arrow takes it back.'),
+    (r'Shift Right', 'Moves the pattern one stage to the right inside Length: pitch, velocity, Mode, Len, Prob, '
+     'Slide, on / off and the padlock move together, and the last stage in use wraps around to stage 1. Stages '
+     'beyond Length and the lane knobs stay. The undo arrow takes it back.'),
+    (r'Lane ([ABC]) Shift Left', 'Moves the knobs of lane {l} one stage to the left inside Length; stage 1 wraps '
+     'around to the last stage in use. Min, Max, Smooth and the mapping stay. The undo arrow takes it back.'),
+    (r'Lane ([ABC]) Shift Right', 'Moves the knobs of lane {l} one stage to the right inside Length; the last stage '
+     'in use wraps around to stage 1. Min, Max, Smooth and the mapping stay. The undo arrow takes it back.'),
     (r'Restart', 'Starts again from stage 1 every 1, 2, 4 or 8 bars, counted from the start of the song, so a '
      'pattern of odd lengths lines up with the bar. With Direction R it picks a new random stage instead. Off: '
      'the sequence runs on freely.'),
@@ -2030,6 +2152,9 @@ INFO = [
      'CCs, pitch bend, and notes when Key In is off.'),
     (r'Strip Page', 'Sequencer: the stage rows. Mod: the three modulation lanes. The right panel follows.'),
     (r'Stage(\d) LED', 'Stage {s}. Lights while it plays.'),
+    (r'Stage(\d) On', 'Click the stage number to switch stage {s} off or on. Off: the stage is silent but keeps its '
+     'time in the cycle and its Mode; its column turns grey and takes no clicks until it is on again, except '
+     'the padlock (its lane knobs still play). Global, Reset and the dice still change it; lock it to keep it.'),
     (r'PitchDial(\d)', 'Pitch of stage {s} in semitones from C3, -36 to +36. With a scale on, the note snaps to the '
      'scale; the knob keeps its place, so turning the scale off brings the note back.'),
     (r'Random Pitch Row', 'New random pitches for every unlocked stage, from Note range (scale notes only when a '
@@ -2064,30 +2189,33 @@ INFO = [
     (r'Mod ([ABC]) Smooth', 'Glide between the values of lane {l}, in ms. 0 jumps at each stage start.'),
     (r'Random Lanes', 'New random values for all three lanes on every unlocked stage. Min, Max, Smooth and the '
      'mappings stay. The undo arrow takes it back.'),
-    (r'Reset Lanes', 'All three lanes to 0 % on every unlocked stage. Min, Max, Smooth and the mappings stay. The '
+    (r'Reset Lanes', 'Puts the Mod page back: all three lanes\' knobs to 0 % on every unlocked stage, Min 0 %, Max '
+     '100 %, Smooth 0 ms. The mappings stay. The '
      'undo arrow takes it back.'),
     (r'Random All', 'New random values on every unlocked stage for the parts ticked below: pitch from Note range, '
      'velocity from Velocity range, Prob 25 to 100 %, Slide on about one stage in four, and Mode, Div, Len, Seq '
      'Length. The undo arrow takes it back.'),
-    (r'Undo', 'Undoes the last Global, Reset, Mutate (Auto\'s too) or die in one click; each click goes one more '
-     'back, up to 32 (Cmd+Z in Live goes back one control at a time). Grey when there is nothing left to undo.'),
-    (r'Reset Ticked', 'Sets the parts ticked below back to their defaults on every unlocked stage: pitch 0 st, '
-     'velocity 120, Mode once, Div 1, Len 1, Prob 100 %, Slide off, Seq Length 8. The undo arrow takes it back.'),
-    (r'Random All Pitch', 'Tick to let Global, Reset and Mutate change the pitches.'),
-    (r'Random All Velocity', 'Tick to let Global, Reset and Mutate change the velocities.'),
-    (r'Random All St\. Mode', 'Tick to let Global, Reset and Mutate change the Modes (rest, once, hold, repeats).'),
-    (r'Random All St\. Div', 'Tick to let Global, Reset and Mutate change how often a repeating stage repeats.'),
-    (r'Random All St\. Length', 'Tick to let Global, Reset and Mutate change the stage lengths (Len).'),
-    (r'Random All Seq Length', 'Tick to let Global and Reset change how many stages play. Mutate leaves it alone.'),
-    (r'Random All Probability', 'Tick to let Global, Reset and Mutate change Prob (Global picks 25, 50, 75 or 100 %).'),
-    (r'Random All Slide', 'Tick to let Global, Reset and Mutate change Slide (Global turns it on for about one stage in '
+    (r'Undo', 'Takes back the last Global, Reset, Mutate (Auto\'s too), die or shift arrow in one click, and only what that tool '
+     'changed: what you set by hand afterwards stays. Each click goes one more back, up to 32 (Cmd+Z in Live goes '
+     'back in smaller steps). Grey when there is nothing left to undo.'),
+    (r'Reset Ticked', 'Puts the Sequencer page back: every unlocked stage to pitch 0 st, velocity 120, Mode once, '
+     'Len 1, Prob 100 %, Slide off, stage on, whatever is ticked below. Length and the settings on the left stay. '
+     'The undo arrow takes it back.'),
+    (r'Random All Pitch', 'Tick to let Global and Mutate change the pitches.'),
+    (r'Random All Velocity', 'Tick to let Global and Mutate change the velocities.'),
+    (r'Random All St\. Mode', 'Tick to let Global and Mutate change the Modes (rest, once, hold, repeats).'),
+    (r'Random All St\. Div', 'Tick to let Global and Mutate change how often a repeating stage repeats.'),
+    (r'Random All St\. Length', 'Tick to let Global and Mutate change the stage lengths (Len).'),
+    (r'Random All Seq Length', 'Tick to let Global change how many stages play. Mutate and Reset leave it alone.'),
+    (r'Random All Probability', 'Tick to let Global and Mutate change Prob (Global picks 25, 50, 75 or 100 %).'),
+    (r'Random All Slide', 'Tick to let Global and Mutate change Slide (Global turns it on for about one stage in '
      'four).'),
     (r'Note Range Low', 'Lowest note Global, Mutate and the Pitch die pick. With a scale on, only scale notes.'),
     (r'Note Range High', 'Highest note Global, Mutate and the Pitch die pick. With a scale on, only scale notes.'),
     (r'Velocity Range Low', 'Lowest velocity Global, Mutate and the Vel die pick.'),
     (r'Velocity Range High', 'Highest velocity Global, Mutate and the Vel die pick.'),
-    (r'Mutate', 'New values for one random stage, for the parts ticked above, picked among the stages that play and '
-     'are not locked. Seq Length stays. Same ranges and scale as Global. The undo arrow takes it back.'),
+    (r'Mutate', 'New values for one random stage, for the parts ticked above, picked among the stages that play '
+     '(inside Length and switched on) and are not locked. Seq Length stays. Same ranges and scale as Global. The undo arrow takes it back.'),
     (r'Mutate Auto', 'On: Mutate runs by itself every 4, 8 or 16 bars (set on the right), at the end of the bar, so '
      'the next bar starts changed. Bars count from the song position: playing from bar 1, the changes come before '
      'bars 5, 9, 13 and so on. Each change is one step for the undo arrow.'),
@@ -2146,7 +2274,7 @@ def push_banks():
              ('Mutate', ['Mutate Auto', 'Mutate Every', 'Lane Mutate Auto', 'Lane Mutate Every', '-', '-', '-', '-']),
              ('Pitch', st('PitchDial%d')), ('Velocity', st('VelocityDial%d')), ('Mode', st('Stage%d Mode')),
              ('Len', st('Stage%d Length')), ('Prob', st('Stage%d Probability')), ('Slide', st('Stage%d Slide')),
-             ('Div', st('Stage%d Div')), ('Scale', ['Scale Source', 'Scale Root', 'Scale', 'Key In', 'MIDI Thru',
+             ('On', st('Stage%d On')), ('Div', st('Stage%d Div')), ('Scale', ['Scale Source', 'Scale Root', 'Scale', 'Key In', 'MIDI Thru',
                                                     '-', '-', '-']),
              ('Lane A', st('Mod A Stage%d')), ('Lane B', st('Mod B Stage%d')), ('Lane C', st('Mod C Stage%d'))]
     return {str(k): {'index': k, 'name': name, 'parameters': params} for k, (name, params) in enumerate(banks)}
@@ -2156,7 +2284,7 @@ def theme_feed(P):
     """Every drawing (jsui running ml185box.js) gets Live's theme colours: on load (after live.thisdevice)
     and whenever the theme changes, live.colors reports everything; the colours the drawings use go out as
     "themecolor <name> r g b a" to all of them. Also: each drawing's patching size equals its face size
-    (jsui may size its drawing from either). Ids obj-4600..4611."""
+    (jsui may size its drawing from either). Ids obj-4600..4613."""
     R = boxes(P)
     draws = [b['box'] for b in P['boxes'] if b['box']['maxclass'] == DRAW_CLASS and b['box'].get('filename') == 'ml185box.js']
     assert draws, 'no drawings'
@@ -2173,7 +2301,7 @@ def theme_feed(P):
     add_line(P, 'obj-4601', 0, 'obj-4602', 0)
     add_line(P, 'obj-4602', 0, 'obj-4603', 0)
     for k, name in enumerate(THEME_NAMES):
-        pid = 'obj-%d' % (4604 + k)
+        pid = 'obj-%d' % (4604 + k if k < 7 else 4605 + k)     # 4611 is the send
         add_box(P, newobj(pid, 'prepend themecolor ' + name, 1, 1, [''], [X + 75 * k, Y + 120, 70.0, 20.0]))
         add_line(P, 'obj-4603', k, pid, 0)
         add_line(P, pid, 0, 'obj-4611', 0)
@@ -2184,7 +2312,7 @@ def theme_feed(P):
 
 
 def fix_pass(P):
-    """Review fix pass (2026-11-12): names Push and automation show, leftovers off the automation list,
+    """Names Push and automation show, leftovers off the automation list,
     the Sequencer / Mod tab out of the undo history, pitch bend back to centre on stop.
     Ids obj-4500..4501."""
     R = boxes(P)
@@ -2209,19 +2337,73 @@ def fix_pass(P):
         short('Stage%d Length' % i, 'St%d Len' % i)
     # the 2009 layer switch (Pitch / Vel / Aux, its Aux gone) is internal only now
     byname['Pitch/Vel/Aux Layer']['saved_attribute_attributes']['valueof']['parameter_invisible'] = 2
-    # Global Step Division: off the face since 2.0, and at load it rewrote every stage's Div
+    # Global Step Division: off the face, and at load it rewrote every stage's Div
     assert R['obj-115']['varname'] == 'Global Step Division'
     remove_box(P, 'obj-115')
     # the Sequencer / Mod tab is a view, not a setting: not stored, so it stays out of Live's undo
     byname['Strip Page']['saved_attribute_attributes']['valueof']['parameter_invisible'] = 2
-    # Not done: ending the held note on a transport jump (---xreset). The jump detector also fires
-    # without a real jump when the scheduler runs late (a 10-tick poll seeing > 40 ticks), and then it
+    # Not done: ending the held note on a transport jump (---xreset). The jump detector also fired
+    # without a real jump when the scheduler ran late (a 10-tick poll seeing > 40 ticks), and then it
     # cut held notes. A held note ends after its own length instead.
+    # A late poll counts as a jump only when its gap is longer than one clock step (edit, (a)),
+    # but a long scheduler stall still can, so held notes keep ending by their own length.
     # pitch bend back to centre on stop and device off while a microtonal scale is on
     add_box(P, newobj('obj-4500', 'r ---xstop', 0, 1, [''], [1150.0, 460.0, 70.0, 20.0]))
     add_box(P, message('obj-4501', 'stopped', [1150.0, 490.0, 55.0, 20.0]))
     add_line(P, 'obj-4500', 0, 'obj-4501', 0)
     add_line(P, 'obj-4501', 0, 'obj-930', 0)
+
+
+MAPPABLE = (('obj-980', 'obj-998', 'obj-987', 'Random All'), ('obj-3401', 'obj-3403', 'obj-3404', 'Mutate'),
+            ('obj-4700', 'obj-4701', 'obj-4702', 'Lane Mutate'), ('obj-4463', 'obj-4464', 'obj-4465', 'Random Lanes'))
+
+
+def mappable_buttons(P):
+    """Global, Mutate, Lane Mutate and the lanes' Random become visible parameters, so Live's key and
+    MIDI map modes show them. Live's key and note mappings toggle a two-state parameter (1, 0, 1, ...), so
+    each of these is a toggle and every change of it runs the action: a mapped key works on every press,
+    and so does a click on the face. (A first version kept the button mode and sent the button a 0 after
+    each bang; in Live the mapping's own toggle did not follow, so every second press did nothing.)
+    A stored toggle reports its value while a set loads: that must not run the action, so a gate in front
+    opens only after the load bang. Known: a momentary CC (127, then 0 on release) changes the toggle twice
+    and runs the action twice.
+    Live's undo or redo of such a change flips the toggle back, which must not run the action again:
+    a change goes gate, t b, "mapped <drawn button>" to the script, which runs the action only for a
+    real press (see mapped in ml185scale.js) by having the drawn button press itself (bang to the
+    action, flash). The drawn button is also set to take a click directly; in Live the parameter
+    gets the click all the same, which is what lets the map modes pick it.
+    Ids obj-4434..4441 (gate, t b per button), 4442..4443 (the gates open after load), 4444..4447 (mapped)."""
+    R = boxes(P)
+    assert R['obj-922']['text'] == 't b b b b b b'
+    add_box(P, newobj('obj-4442', 'delay 200', 2, 1, ['bang'], [1400.0, 1500.0, 60.0, 20.0]))
+    add_box(P, message('obj-4443', '1', [1400.0, 1530.0, 30.0, 20.0]))
+    add_line(P, 'obj-922', 0, 'obj-4442', 0)
+    add_line(P, 'obj-4442', 0, 'obj-4443', 0)
+    for k, (btn, rb, s1, long) in enumerate(MAPPABLE):
+        v = R[btn]['saved_attribute_attributes']['valueof']
+        assert v['parameter_longname'] == long and R[rb]['text'] == 'route bang' and R[s1]['text'] == 'sel 1'
+        assert R[btn].get('mode', 1) == 0 and not v.get('parameter_initial_enable')
+        v['parameter_invisible'] = 0
+        v['parameter_enum'] = ['off', 'on']
+        R[btn]['mode'] = 1
+        target = [l['patchline']['destination'][0] for l in P['lines'] if l['patchline']['source'] == [rb, 0]]
+        draw = [l['patchline']['destination'][0] for l in P['lines']
+                if l['patchline']['source'] == [btn, 0] and R[l['patchline']['destination'][0]]['maxclass'] == DRAW_CLASS]
+        assert len(target) == 1 and R[target[0]]['maxclass'] == 'message' and len(draw) == 1, long
+        remove_line(P, rb, 1, s1, 0)                 # the 1 / 0 no longer goes through sel 1 ...
+        remove_line(P, s1, 0, target[0], 0)
+        remove_box(P, s1)
+        remove_line(P, btn, 0, draw[0], 0)           # ... and the drawing flashes only for a real press
+        gt, tb = 'obj-%d' % (4434 + 2 * k), 'obj-%d' % (4435 + 2 * k)
+        x, y = R[btn]['patching_rect'][:2]
+        add_box(P, newobj(gt, 'gate 1', 2, 1, [''], [x + 120, y + 30, 45.0, 20.0]))      # closed while loading
+        add_box(P, newobj(tb, 't b', 1, 1, ['bang'], [x + 120, y + 60, 30.0, 20.0]))
+        mp = 'obj-%d' % (4444 + k)
+        add_box(P, message(mp, 'mapped ' + R[draw[0]]['varname'], [x + 120, y + 90, 140.0, 20.0]))
+        R[draw[0]].update(ignoreclick=0, numoutlets=1, outlettype=[''])      # the click: drawn button -> action
+        for a_, ao, b_, bi in ((rb, 1, gt, 1), ('obj-4443', 0, gt, 0), (gt, 0, tb, 0), (tb, 0, mp, 0),
+                               (mp, 0, 'obj-930', 0), (draw[0], 0, target[0], 0)):
+            add_line(P, a_, ao, b_, bi)
 
 
 def remove_aux_and_length_mode(P):
@@ -2247,7 +2429,7 @@ LEN_TEXT = ('Length of this stage in clock steps: click a cell, or drag along, t
 
 
 def p6_controls(P, menu_t, stage_len):
-    """STEPS page, 2026-11-10: one Mode word instead of the Mode and Div tabs, and the Len cells
+    """STEPS page: one Mode word instead of the Mode and Div tabs, and the Len cells
     with the notes drawn in (tied cells) instead of the 1-8 tab. Display and input only: the Stage
     Mode / Div / Length tabs stay the parameters (hidden), so sets and automation are unchanged.
     The Mode word is a dropdown (hidden parameter, not saved); choosing asks ml185scale.js to write

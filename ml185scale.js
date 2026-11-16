@@ -109,6 +109,8 @@ var stripPage = 0;    // 0 Sequencer, 1 Mod
 var uiMicro = 0;
 
 var observers = null;
+var liveReady = 0;    // set by init: no Live API call before that
+var songApi = null;   // live_set, made on the first mapped change (mapped)
 var tunApi = null;
 var tunTask = null;
 
@@ -141,6 +143,7 @@ function loadbang() {
 
 // Called from live.thisdevice: the Live API is only usable after that bang.
 function init() {
+	liveReady = 1;
 	try {
 		if (!observers) {
 			observers = [];
@@ -176,8 +179,8 @@ function init() {
 // Each tool the face offers (Global, Reset, Mutate, the Pitch / Vel dice, the lane dice, lane Random /
 // Reset) first remembers what it can change, for Undo, then skips every locked stage.
 
-function random() { remember(); rndPitch(); }        // the Pitch die
-function randomvel() { remember(); rndVel(); }       // the Vel die
+function random() { remember(partNames(freeStages(8), { pitch: 1 })); rndPitch(); }      // the Pitch die
+function randomvel() { remember(partNames(freeStages(8), { vel: 1 })); rndVel(); }      // the Vel die
 
 function rndPitch() {
 	if (!current) rebuild();
@@ -198,7 +201,7 @@ function rndVel() {
 
 // A lane's die: its 8 knobs to random whole percentages, 0..100.
 var LANE_LETTERS = ["A", "B", "C"];
-function randomlane(l) { remember(); laneRandom(l); }
+function randomlane(l) { remember(laneNames(freeStages(8), [clampInt(l, 0, LANE_LETTERS.length - 1)])); laneRandom(l); }
 function laneRandom(l) {
 	var letter = LANE_LETTERS[clampInt(l, 0, LANE_LETTERS.length - 1)];
 	for (var i = 1; i <= 8; i++) {
@@ -211,22 +214,26 @@ function laneRandom(l) {
 	}
 }
 
-// The Mod page's Random and Reset: all three lanes' knobs, nothing else (Min,
-// Max, Smooth and the mapping stay).
+// The Mod page's Random: all three lanes' knobs, nothing else (Min, Max, Smooth and
+// the mapping stay). Its Reset puts the whole Mod page back: the knobs of every
+// unlocked stage and each lane's Min, Max and Smooth, to the RESET values below. Only the mappings stay.
 function randomlanes() {
-	remember();
+	remember(laneNames(freeStages(8)));
 	for (var l = 0; l < LANE_LETTERS.length; l++) laneRandom(l);
 }
 function resetlanes() {
-	remember();
+	remember(laneNames(freeStages(8)).concat(laneSetNames()));
 	for (var l = 0; l < LANE_LETTERS.length; l++) {
-		for (var i = 1; i <= 8; i++) {
-			if (locked(i)) continue;
-			try {
-				send("Mod " + LANE_LETTERS[l] + " Stage" + i, "float", 0);
-			} catch (e) {
-				post("ml185scale: cannot reset lane " + LANE_LETTERS[l] + ": " + e + "\n");
+		var L = "Mod " + LANE_LETTERS[l];
+		try {
+			for (var i = 1; i <= 8; i++) {
+				if (!locked(i)) send(L + " Stage" + i, "float", RESET.lane);
 			}
+			send(L + " Min", "float", RESET.lmin);
+			send(L + " Max", "float", RESET.lmax);
+			send(L + " Smooth", "float", RESET.lsmooth);
+		} catch (e) {
+			post("ml185scale: cannot reset lane " + LANE_LETTERS[l] + ": " + e + "\n");
 		}
 	}
 }
@@ -234,8 +241,8 @@ function resetlanes() {
 // Global: the ticked parts of every unlocked stage. Stage tabs and the Length knob are set by
 // scripting name; "int" makes them output, so the sequencer reacts as if they had been clicked.
 function randomall() {
-	remember();
 	var free = freeStages(8);
+	remember(partNames(free, rndAll).concat(rndAll.seqlen ? ["Sequence Length"] : []));
 	if (rndAll.pitch) rndPitch();
 	if (rndAll.vel) rndVel();
 	if (rndAll.mode) randomStages("Mode", 4, free);     // rest, once, repeat, hold
@@ -255,23 +262,101 @@ var SLIDE_CHANCE = 0.25;
 function randProb() { return PROB_STEPS[Math.floor(Math.random() * PROB_STEPS.length)]; }
 function randSlide() { return Math.random() < SLIDE_CHANCE ? 1 : 0; }
 
-// Reset (the mirror of Global): the parts ticked for Global go back to a fresh
-// device's values. Pitch and velocity take the same way as Random; the stage tabs and Length by name.
+// Reset: each page's Reset puts that whole page back to a fresh device's values,
+// whatever is ticked (the ticks steer Global and Mutate only). On the Sequencer page that is every
+// row of every unlocked stage; Length and the settings column are not part of the page. Pitch and
+// velocity take the same way as Random; the stage controls by name.
 // The values must match the parameters' initial values.
-var RESET = { pitch: 0, vel: 120, mode: 1, div: 0, stlen: 0, seqlen: 8, prob: 100, slide: 0 };
+var RESET = { pitch: 0, vel: 120, mode: 1, div: 0, stlen: 0, prob: 100, slide: 0, on: 1, lane: 0, lmin: 0, lmax: 100, lsmooth: 0 };
 function resetall() {
-	remember();
+	remember(partNames(freeStages(8), RESET));
 	for (var i = 1; i <= 8; i++) {
 		if (locked(i)) continue;
-		if (rndAll.pitch) outlet(OUT_RANDOM, i, RESET.pitch);
-		if (rndAll.vel) outlet(OUT_RANDOM_VEL, i, RESET.vel);
-		if (rndAll.mode) sendInt("Stage" + i + " Mode", RESET.mode);
-		if (rndAll.div) sendInt("Stage" + i + " Div", RESET.div);
-		if (rndAll.stlen) sendInt("Stage" + i + " Length", RESET.stlen);
-		if (rndAll.prob) sendInt("Stage" + i + " Probability", RESET.prob);
-		if (rndAll.slide) sendInt("Stage" + i + " Slide", RESET.slide);
+		outlet(OUT_RANDOM, i, RESET.pitch);
+		outlet(OUT_RANDOM_VEL, i, RESET.vel);
+		sendInt("Stage" + i + " Mode", RESET.mode);
+		sendInt("Stage" + i + " Div", RESET.div);
+		sendInt("Stage" + i + " Length", RESET.stlen);
+		sendInt("Stage" + i + " Probability", RESET.prob);
+		sendInt("Stage" + i + " Slide", RESET.slide);
+		sendInt("Stage" + i + " On", RESET.on);
 	}
-	if (rndAll.seqlen) sendInt("Sequence Length", RESET.seqlen);
+}
+
+// Shift: the arrows rotate the pattern by one stage inside stages 1..Length and wrap; stages
+// beyond Length stay. "shift -1" / "shift 1": every stage row moves left / right, and pitch, velocity, Mode,
+// Div, Len, Prob, Slide, On and Lock travel together; the lane knobs stay. "laneshift <lane> -1 | 1": that
+// lane's eight knobs only (Min, Max, Smooth and the mapping stay). A shift moves values, it does not change
+// them, so locks do not stop it (the padlock travels with its stage). One undo step per press; with Length 1
+// there is nothing to move and no step.
+var SHIFT_ROWS = ["PitchDial#", "VelocityDial#", "Stage# Div", "Stage# Mode", "Stage# Length", "Stage# Probability",
+	"Stage# Slide", "Stage# On", "Stage# Lock"];      // Div before Mode, as the Mode menu writes them
+function shift(d) { shiftRows(SHIFT_ROWS, d); }
+function laneshift(l, d) { shiftRows(["Mod " + LANE_LETTERS[clampInt(l, 0, LANE_LETTERS.length - 1)] + " Stage#"], d); }
+function shiftRows(rows, d) {
+	var n = clampInt(readValue("Sequence Length"), 1, 8);
+	if (n < 2) return;
+	var dir = Number(d) < 0 ? -1 : 1;
+	var names = [];
+	var moves = [];
+	for (var k = 0; k < rows.length; k++) {
+		var old = [];
+		for (var s = 1; s <= n; s++) {
+			names.push(rows[k].replace("#", s));
+			old.push(readValue(rows[k].replace("#", s)));
+		}
+		if (old.indexOf(null) >= 0) continue;          // a row that cannot be read is left as it is
+		for (var j = 0; j < n; j++) {
+			var v = old[((j - dir) % n + n) % n];          // right: stage j gets stage j - 1's value; left: j + 1's
+			if (Math.abs(v - old[j]) >= 1e-6) moves.push([rows[k].replace("#", j + 1), v]);
+		}
+	}
+	if (!moves.length) return;                         // every value equal: nothing moves, no step
+	remember(names);
+	for (var m = 0; m < moves.length; m++) {
+		try {
+			send(moves[m][0], /^Mod /.test(moves[m][0]) ? "float" : "int", moves[m][1]);   // lane knobs are fractional
+		} catch (e) {
+			post("ml185scale: cannot shift " + moves[m][0] + ": " + e + "\n");
+		}
+	}
+}
+
+// "mapped <drawn button name>": the parameter of Global, Mutate, Lane Mutate or the lanes' Random changed,
+// behind the load gate: a click on the face (the parameter lies over the drawn button and takes it), a
+// mapped key or note, Push, automation, or Live's own undo / redo of such a change. Only a real press may
+// run the tool: an undone or redone change would run it a second time. Without Live's API (standalone
+// Max) it always runs. Running = the drawn button's "press": its bang goes to the tool's message box and
+// it flashes.
+// Told apart from a real press by Live's redo list: while Live has something to redo, the change is
+// Live's undo or redo and nothing runs. The check waits a moment: the values the tool writes then land
+// above the button's own entry in Live's history, so on the way back that entry is redone first,
+// with the values still to come.
+var mapTasks = {};    // one timer per button, kept so it is not collected before it fires
+function mapped() {
+	var name = Array.prototype.slice.call(arguments).join(" ");
+	if (!liveReady) { mappedRun(name); return; }
+	try {
+		if (!mapTasks[name]) mapTasks[name] = new Task(function () { mappedRun(name); }, this);
+		mapTasks[name].cancel();
+		mapTasks[name].schedule(40);
+	} catch (e) {
+		mappedRun(name);
+	}
+}
+function mappedRun(name) {
+	var redo = 0;
+	if (liveReady) {
+		try {
+			if (!songApi) songApi = new LiveAPI(nop, "live_set");
+			redo = first(songApi.get("can_redo"));
+		} catch (e) {
+			redo = 0;
+		}
+	}
+	if (redo === 1) return;
+	var o = ui(name);
+	if (o) o.message("press");
 }
 
 // The face's Mode dropdown per stage (rest, once, hold, 1/4, 1/3, 1/2, all)
@@ -293,22 +378,31 @@ function modepick(n, v) {
 // one such stage gets new values on all three lanes. One undo step each; nothing to pick or no part
 // ticked, no step (Auto would otherwise fill the history with empty steps).
 function mutate() {
-	var i = stagePartsTicked() ? pickStage() : 0;
+	var i = stagePartsTicked() ? pickStage(1) : 0;
 	if (!i) return;
-	remember();
+	remember(partNames([i], rndAll));
 	mutateStage(i);
 }
 function lanemutate() {
-	var i = pickStage();
+	var i = pickStage(0);
 	if (!i) return;
-	remember();
+	remember(laneNames([i]));
 	mutateLanes(i);
 }
 function stagePartsTicked() {
 	return rndAll.pitch || rndAll.vel || rndAll.mode || rndAll.div || rndAll.stlen || rndAll.prob || rndAll.slide;
 }
-function pickStage() {               // 0 when every stage in use is locked
+// The stage a Mutate changes: among the stages in use that are not locked. The Sequencer page's Mutate
+// (sounding = 1) also leaves out a stage that is switched off: nothing of it would be heard, and it would
+// come back changed. The Mod page's Mutate keeps it: a stage that is off still sends its lane values.
+// 0 when no stage is left.
+function pickStage(sounding) {
 	var free = freeStages(clampInt(readValue("Sequence Length"), 1, 8));
+	if (sounding) {
+		var onOnes = [];
+		for (var k = 0; k < free.length; k++) if (readValue("Stage" + free[k] + " On") !== 0) onOnes.push(free[k]);
+		free = onOnes;
+	}
 	return free.length ? free[Math.floor(Math.random() * free.length)] : 0;
 }
 function mutateStage(i) {
@@ -359,10 +453,11 @@ function setAuto(k, v) {
 function barend(bar) {
 	barsPlayed = barsPlayed < 0 ? Math.floor(Number(bar)) : barsPlayed + 1;
 	if (!(barsPlayed >= 1)) return;
-	var s = autoOn[0] && barsPlayed % autoEvery[0] === 0 && stagePartsTicked() ? pickStage() : 0;
-	var l = autoOn[1] && barsPlayed % autoEvery[1] === 0 ? pickStage() : 0;
+	var s = autoOn[0] && barsPlayed % autoEvery[0] === 0 && stagePartsTicked() ? pickStage(1) : 0;
+	var l = autoOn[1] && barsPlayed % autoEvery[1] === 0 ? pickStage(0) : 0;
 	if (!s && !l) return;
-	remember();                      // one undo step, also when both pages mutate on this bar
+	// one undo step, also when both pages mutate on this bar
+	remember((s ? partNames([s], rndAll) : []).concat(l ? laneNames([l]) : []));
 	if (s) mutateStage(s);
 	if (l) mutateLanes(l);
 }
@@ -382,22 +477,45 @@ function freeStages(m) {
 // ones that differ, in one click. Each press goes one random tool further back, up to HISTORY_MAX.
 var HISTORY_MAX = 32;
 var history = [];     // what each random tool found before it ran, oldest first
-function snapNames() {
-	var n = ["Sequence Length"];
-	for (var i = 1; i <= 8; i++) {
-		n.push("PitchDial" + i, "VelocityDial" + i, "Stage" + i + " Mode", "Stage" + i + " Div",
-			"Stage" + i + " Length", "Stage" + i + " Probability", "Stage" + i + " Slide");
-		for (var l = 0; l < LANE_LETTERS.length; l++) n.push("Mod " + LANE_LETTERS[l] + " Stage" + i);
+// A tool remembers only the controls it is about to write: the rows it changes, on the stages it may
+// touch. So the arrow takes back the tool and nothing else: a Length, a stage switched off or a knob
+// set by hand after it stay as they are, and a locked stage is never part of a step.
+var PART_NAMES = { pitch: "PitchDial#", vel: "VelocityDial#", mode: "Stage# Mode", div: "Stage# Div",
+	stlen: "Stage# Length", prob: "Stage# Probability", slide: "Stage# Slide", on: "Stage# On" };
+function partNames(stages, parts) {      // parts: the ticks (rndAll) or any object keyed like PART_NAMES
+	var n = [];
+	for (var k = 0; k < stages.length; k++) {
+		for (var key in PART_NAMES) {
+			if (PART_NAMES.hasOwnProperty(key) && parts[key] !== undefined && (parts === RESET || parts[key])) {
+				n.push(PART_NAMES[key].replace("#", stages[k]));
+			}
+		}
 	}
 	return n;
 }
-function remember() {
-	var names = snapNames();
+function laneNames(stages, lanes) {       // lanes: indexes, all three when left out
+	var n = [];
+	for (var l = 0; l < LANE_LETTERS.length; l++) {
+		if (lanes && lanes.indexOf(l) < 0) continue;
+		for (var k = 0; k < stages.length; k++) n.push("Mod " + LANE_LETTERS[l] + " Stage" + stages[k]);
+	}
+	return n;
+}
+function laneSetNames() {                 // what the Mod page's Reset changes besides the knobs
+	var n = [];
+	for (var k = 0; k < LANE_LETTERS.length; k++) {
+		n.push("Mod " + LANE_LETTERS[k] + " Min", "Mod " + LANE_LETTERS[k] + " Max", "Mod " + LANE_LETTERS[k] + " Smooth");
+	}
+	return n;
+}
+function remember(names) {
 	var snap = {};
+	var any = false;
 	for (var k = 0; k < names.length; k++) {
 		var v = readValue(names[k]);
-		if (v !== null) snap[names[k]] = v;
+		if (v !== null) { snap[names[k]] = v; any = true; }
 	}
+	if (!any) return;                     // nothing the tool can write: no step
 	history.push(snap);
 	if (history.length > HISTORY_MAX) history.shift();
 	undoView();
@@ -458,6 +576,12 @@ function notifydeleted() {
 		tunTask.freepeer();
 		tunTask = null;
 	}
+	for (var k in mapTasks) {
+		if (mapTasks.hasOwnProperty(k)) {
+			try { mapTasks[k].cancel(); mapTasks[k].freepeer(); } catch (e) {}
+		}
+	}
+	mapTasks = {};
 }
 
 // ---- Live scale and tuning ---------------------------------------------
